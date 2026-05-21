@@ -78,14 +78,20 @@ def execute_action(client: BinanceDemoClient, action: int,
     try:
         sym = config.SYMBOL
 
-        if action == TradingEnv.LONG and current_position != 1:
+        if action == TradingEnv.FLAT:
+            if current_position != 0:
+                _close_all(client)
+                log.info(f"[LIVE] FLAT (cierre) @ {price:.2f}")
+            return 0
+
+        elif action == TradingEnv.LONG and current_position != 1:
             if current_position == -1:
                 _close_all(client)
             balance = client.fetch_balance()["USDT"]["free"]
             qty = round(balance * 0.95 / price, 3)
             if qty > 0:
                 client.create_market_order(sym, "buy", qty)
-                log.info(f"[LIVE] BUY {qty} BTC @ {price:.2f}")
+                log.info(f"[LIVE] LONG {qty} BTC @ {price:.2f}")
             return 1
 
         elif action == TradingEnv.SHORT and current_position != -1:
@@ -95,13 +101,8 @@ def execute_action(client: BinanceDemoClient, action: int,
             qty = round(balance * 0.95 / price, 3)
             if qty > 0:
                 client.create_market_order(sym, "sell", qty)
-                log.info(f"[LIVE] SELL {qty} BTC @ {price:.2f}")
+                log.info(f"[LIVE] SHORT {qty} BTC @ {price:.2f}")
             return -1
-
-        elif action == TradingEnv.CLOSE and current_position != 0:
-            _close_all(client)
-            log.info(f"[LIVE] CLOSE @ {price:.2f}")
-            return 0
 
     except Exception as e:
         log.error(f"Error ejecutando orden: {e}")

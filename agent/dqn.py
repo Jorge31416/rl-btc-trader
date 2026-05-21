@@ -90,9 +90,9 @@ class DQNAgent:
     mirando velas crudas y recibiendo recompensas por sus trades.
     """
 
-    ACTION_NAMES = ["HOLD", "LONG", "SHORT", "CLOSE"]
+    ACTION_NAMES = ["FLAT", "LONG", "SHORT"]
 
-    def __init__(self, state_size: int, action_size: int = 4):
+    def __init__(self, state_size: int, action_size: int = 3):
         self.state_size  = state_size
         self.action_size = action_size
 
