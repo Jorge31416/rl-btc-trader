@@ -22,6 +22,7 @@ import config
 from data.demo_client import BinanceDemoClient
 from env.trading_env import TradingEnv
 from agent.dqn import DQNAgent
+import notifications.telegram as tg
 
 logging.basicConfig(
     level=logging.INFO,
@@ -124,19 +125,23 @@ def main():
     log.info(f"  Device: {agent.device}")
     log.info("=" * 55)
 
-    best_capital = 0.0
+    tg.notify_train_start(len(df), args.epochs,
+                          env.state_size, str(agent.device))
+
+    best_capital  = 0.0
+    SUMMARY_EVERY = 5   # Telegram cada N epocas
 
     for ep in range(1, args.epochs + 1):
         t0      = time.time()
         metrics = run_episode(env, agent, training=True)
 
-        capital     = metrics["capital"]
-        total_rew   = metrics["reward"]
-        n_trades    = metrics["n_trades"]
-        loss        = metrics["loss"]
-        epsilon     = metrics["epsilon"]
-        ret_pct     = (capital - config.INITIAL_CAP) / config.INITIAL_CAP * 100
-        elapsed     = time.time() - t0
+        capital   = metrics["capital"]
+        total_rew = metrics["reward"]
+        n_trades  = metrics["n_trades"]
+        loss      = metrics["loss"]
+        epsilon   = metrics["epsilon"]
+        ret_pct   = (capital - config.INITIAL_CAP) / config.INITIAL_CAP * 100
+        elapsed   = time.time() - t0
 
         log.info(
             f"Ep {ep:3d}/{args.epochs} | "
@@ -153,11 +158,16 @@ def main():
             best_capital = capital
             agent.save("checkpoints/dqn_best.pth")
 
-        # Checkpoint periodico
-        if ep % 10 == 0:
+        # Checkpoint + Telegram cada SUMMARY_EVERY epocas
+        if ep % SUMMARY_EVERY == 0 or ep == args.epochs:
             agent.save("checkpoints/dqn_latest.pth")
+            tg.notify_train_epoch(ep, args.epochs, capital, ret_pct,
+                                  n_trades, loss, epsilon, best_capital)
 
     agent.save("checkpoints/dqn_final.pth")
+    tg.notify_train_end(best_capital, agent.epsilon,
+                        agent.steps, args.epochs)
+
     log.info("=" * 55)
     log.info(f"  Entrenamiento completado.")
     log.info(f"  Mejor capital: {best_capital:.2f} USDT")
