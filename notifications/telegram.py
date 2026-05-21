@@ -63,6 +63,16 @@ def notify_train_end(best_capital: float, final_epsilon: float,
 
 # ── Bot en vivo ───────────────────────────────────────────────────────────────
 
+def notify_position_open(side: str, price: float, epsilon: float, step: int):
+    emoji = "📈" if side == "LONG" else "📉"
+    _send(
+        f"{emoji} <b>Posicion abierta: {side}</b>\n"
+        f"Precio  : {price:,.2f} USDT\n"
+        f"Epsilon : {epsilon:.4f}\n"
+        f"Step    : {step:,}"
+    )
+
+
 def notify_start(epsilon: float, steps: int):
     _send(
         f"<b>RL BTC Bot iniciado</b>\n"

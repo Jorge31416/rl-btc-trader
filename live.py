@@ -159,6 +159,8 @@ def main():
     live_position  = 0        # posicion real en Binance (-1, 0, 1)
     entry_price    = 0.0
     n_trades       = 0
+    n_wins         = 0
+    pnl_history    = []       # lista de pnl_pct de trades cerrados
     prev_obs       = None
     prev_action    = None
     step           = 0
@@ -171,51 +173,71 @@ def main():
                 time.sleep(30)
                 continue
 
-            price   = float(df["close"].iloc[-1])
-            obs     = get_obs(df, env)
+            price = float(df["close"].iloc[-1])
+            obs   = get_obs(df, env)
 
             # Actualizar estado del entorno con posicion real
             env.position    = live_position
             env.entry_price = entry_price
 
-            # Calcular recompensa del paso anterior
+            # Recompensa del paso anterior → buffer
             if prev_obs is not None and prev_action is not None:
-                # Reward basado en cambio de precio y posicion
-                if live_position != 0:
-                    raw_reward = (price - entry_price) / entry_price * live_position
-                else:
-                    raw_reward = 0.0
-                # Guardar en buffer
-                agent.remember(prev_obs, prev_action, raw_reward, obs,
-                               False)  # done=False en live
+                raw_reward = (
+                    (price - entry_price) / entry_price * live_position
+                    if live_position != 0 else 0.0
+                )
+                agent.remember(prev_obs, prev_action, raw_reward, obs, False)
 
             # Decidir accion
             action     = agent.act(obs, training=True)
             action_str = agent.ACTION_NAMES[action]
 
+            # Calcular PnL latente para el log
+            unreal = 0.0
+            if live_position != 0 and entry_price > 0:
+                unreal = (price - entry_price) / entry_price * live_position
+
+            pos_char = "L" if live_position == 1 else ("S" if live_position == -1 else "-")
             log.info(
-                f"Price={price:.2f} | Pos={'L' if live_position==1 else ('S' if live_position==-1 else '-')} | "
-                f"Action={action_str} | Eps={agent.epsilon:.3f} | "
-                f"Buf={len(agent.buffer)}"
+                f"Price={price:.2f} | Pos={pos_char}"
+                f"{f' PnL={unreal*100:+.2f}%' if live_position != 0 else ''} | "
+                f"Action={action_str} | Eps={agent.epsilon:.4f} | "
+                f"Buf={len(agent.buffer)} | Trades={n_trades}"
             )
 
-            # Ejecutar si cambia algo
+            # Ejecutar accion
             prev_position = live_position
             live_position = execute_action(client, action, live_position, price)
 
-            # Registrar apertura/cierre
+            # ── Apertura de posicion ──────────────────────────────────────
             if prev_position == 0 and live_position != 0:
                 entry_price = price
+                side_str    = "LONG" if live_position == 1 else "SHORT"
+                log.info(f"[OPEN] {side_str} @ {price:.2f}")
+                tg.notify_position_open(
+                    side    = side_str,
+                    price   = price,
+                    epsilon = agent.epsilon,
+                    step    = step,
+                )
+
+            # ── Cierre de posicion ────────────────────────────────────────
             elif prev_position != 0 and live_position == 0:
                 pnl = (price - entry_price) / entry_price * prev_position
+                fee = config.TRADE_FEE * 2
+                pnl_net = pnl - fee
                 n_trades += 1
-                log.info(f"Trade #{n_trades} cerrado | PnL={pnl*100:+.2f}%")
+                if pnl_net > 0:
+                    n_wins += 1
+                pnl_history.append(pnl_net)
+                win_rate = n_wins / n_trades
+
+                log.info(f"[CLOSE] Trade #{n_trades} | PnL={pnl_net*100:+.2f}% | WR={win_rate*100:.0f}%")
                 tg.notify_trade(
-                    side       = "long" if prev_position == 1 else "short",
+                    side       = "LONG" if prev_position == 1 else "SHORT",
                     entry      = entry_price,
                     exit_price = price,
-                    pnl_pct    = pnl,
-                    reason     = action_str,
+                    pnl_pct    = pnl_net,
                     n_trades   = n_trades,
                     epsilon    = agent.epsilon,
                 )
@@ -225,24 +247,40 @@ def main():
             prev_action = action
             step       += 1
 
-            # Entrenar periodicamente
+            # ── Entrenamiento periodico ───────────────────────────────────
             if step % config.TRAIN_EVERY_STEPS == 0 and len(agent.buffer) >= config.BATCH_SIZE:
-                losses = [agent.train_step() for _ in range(10) if agent.train_step() is not None]
+                losses = []
+                for _ in range(10):
+                    l = agent.train_step()
+                    if l is not None:
+                        losses.append(l)
                 if losses:
-                    log.info(f"[TRAIN] loss_mean={np.mean(losses):.4f} eps={agent.epsilon:.4f}")
+                    log.info(f"[TRAIN] loss={np.mean(losses):.5f} eps={agent.epsilon:.4f}")
 
-            # Guardar checkpoint periodicamente
+            # ── Checkpoint periodico ──────────────────────────────────────
             if step % config.SAVE_EVERY_STEPS == 0:
                 agent.save("checkpoints/dqn_latest.pth")
+                log.info(f"Checkpoint guardado (step {step})")
 
-            # Resumen diario a las 08:00 UTC
+            # ── Resumen periodico cada 100 steps ─────────────────────────
+            if step % 100 == 0 and n_trades > 0:
+                try:
+                    balance  = client.fetch_balance()["USDT"]["total"]
+                    ret      = (balance - config.INITIAL_CAP) / config.INITIAL_CAP
+                    win_rate = n_wins / n_trades
+                    tg.notify_summary(step, n_trades, win_rate, ret, agent.epsilon)
+                except Exception:
+                    pass
+
+            # ── Resumen diario a las 08:00 UTC ────────────────────────────
             now_h = datetime.now(timezone.utc).hour
             if now_h == 8 and last_summary_h != 8:
                 last_summary_h = 8
                 try:
-                    balance = client.fetch_balance()["USDT"]["total"]
-                    ret = (balance - config.INITIAL_CAP) / config.INITIAL_CAP
-                    tg.notify_summary(step, n_trades, 0.0, ret, agent.epsilon)
+                    balance  = client.fetch_balance()["USDT"]["total"]
+                    ret      = (balance - config.INITIAL_CAP) / config.INITIAL_CAP
+                    win_rate = n_wins / n_trades if n_trades > 0 else 0.0
+                    tg.notify_summary(step, n_trades, win_rate, ret, agent.epsilon)
                 except Exception:
                     pass
             elif now_h != 8:
