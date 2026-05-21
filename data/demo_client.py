@@ -53,10 +53,12 @@ class BinanceDemoClient:
         return data
 
     def fetch_ohlcv(self, symbol: str, timeframe: str = "5m",
-                    limit: int = 200) -> list:
-        sym = symbol.replace("/", "").replace(":USDT", "")
-        data = self._get("/fapi/v1/klines",
-                         {"symbol": sym, "interval": timeframe, "limit": limit})
+                    limit: int = 200, end_time: int = None) -> list:
+        sym    = symbol.replace("/", "").replace(":USDT", "")
+        params = {"symbol": sym, "interval": timeframe, "limit": min(limit, 1500)}
+        if end_time is not None:
+            params["endTime"] = end_time
+        data = self._get("/fapi/v1/klines", params)
         return [[int(k[0]), float(k[1]), float(k[2]),
                  float(k[3]), float(k[4]), float(k[5])] for k in data]
 

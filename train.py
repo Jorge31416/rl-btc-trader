@@ -33,13 +33,36 @@ log = logging.getLogger(__name__)
 
 
 def download_history(candles: int) -> pd.DataFrame:
-    """Descarga datos historicos de Binance Demo."""
+    """
+    Descarga datos historicos paginando en chunks de 1500
+    (limite maximo de Binance por request).
+    """
+    MAX_PER_REQUEST = 1500
     log.info(f"Descargando {candles} velas de {config.SYMBOL} {config.TIMEFRAME}...")
     client = BinanceDemoClient(config.API_KEY, config.API_SECRET)
-    raw    = client.fetch_ohlcv(config.SYMBOL, config.TIMEFRAME, limit=candles)
-    df = pd.DataFrame(raw, columns=["timestamp","open","high","low","close","volume"])
+
+    all_rows = []
+    end_time = None   # None = desde ahora hacia atras
+
+    while len(all_rows) < candles:
+        batch_size = min(MAX_PER_REQUEST, candles - len(all_rows))
+        raw = client.fetch_ohlcv(
+            config.SYMBOL, config.TIMEFRAME,
+            limit=batch_size, end_time=end_time,
+        )
+        if not raw:
+            break
+        # raw viene en orden ascendente; el primer elemento es el mas antiguo
+        all_rows = raw + all_rows          # prepend → orden cronologico
+        end_time = raw[0][0] - 1           # siguiente batch termina antes del primero actual
+        log.info(f"  Descargadas {len(all_rows)}/{candles} velas...")
+        if len(raw) < batch_size:          # Binance devolvio menos de lo pedido → no hay mas
+            break
+
+    df = pd.DataFrame(all_rows, columns=["timestamp","open","high","low","close","volume"])
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
     df.set_index("timestamp", inplace=True)
+    df = df[~df.index.duplicated()].sort_index()
     log.info(f"Datos: {len(df)} velas | {df.index[0]} -> {df.index[-1]}")
     return df.astype(float)
 
