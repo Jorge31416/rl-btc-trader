@@ -1,4 +1,9 @@
-torch>=2.2.0
+# PyTorch con CUDA 12.4 (RTX 4060 Ti)
+# Instalar con:
+#   pip install torch==2.5.1+cu124 --index-url https://download.pytorch.org/whl/cu124
+#   pip install -r requirements.txt
+# IMPORTANTE: requiere Python 3.11 o 3.12 (no 3.14 — sin wheels CUDA todavia)
+torch==2.5.1+cu124
 numpy>=1.26.0
 pandas>=2.2.0
 requests>=2.31.0
