@@ -158,13 +158,12 @@ def main():
     # Estado del bot
     live_position  = 0        # posicion real en Binance (-1, 0, 1)
     entry_price    = 0.0
+    entry_balance  = 0.0      # balance USDT al abrir la posicion
     n_trades       = 0
-    n_wins         = 0
-    pnl_history    = []       # lista de pnl_pct de trades cerrados
+    pnl_usdt_hist  = []       # PnL en USDT por trade (para métricas)
     prev_obs       = None
     prev_action    = None
     step           = 0
-    last_summary_h = -1
 
     while True:
         try:
@@ -211,8 +210,12 @@ def main():
 
             # ── Apertura de posicion ──────────────────────────────────────
             if prev_position == 0 and live_position != 0:
-                entry_price = price
-                side_str    = "LONG" if live_position == 1 else "SHORT"
+                entry_price   = price
+                try:
+                    entry_balance = client.fetch_balance()["USDT"]["total"]
+                except Exception:
+                    entry_balance = config.INITIAL_CAP
+                side_str = "LONG" if live_position == 1 else "SHORT"
                 log.info(f"[OPEN] {side_str} @ {price:.2f}")
                 tg.notify_position_open(
                     side    = side_str,
@@ -223,25 +226,25 @@ def main():
 
             # ── Cierre de posicion ────────────────────────────────────────
             elif prev_position != 0 and live_position == 0:
-                pnl = (price - entry_price) / entry_price * prev_position
-                fee = config.TRADE_FEE * 2
-                pnl_net = pnl - fee
+                pnl_pct  = (price - entry_price) / entry_price * prev_position
+                fee      = config.TRADE_FEE * 2
+                pnl_net  = pnl_pct - fee
+                pnl_usdt = pnl_net * entry_balance
                 n_trades += 1
-                if pnl_net > 0:
-                    n_wins += 1
-                pnl_history.append(pnl_net)
-                win_rate = n_wins / n_trades
+                pnl_usdt_hist.append(pnl_usdt)
 
-                log.info(f"[CLOSE] Trade #{n_trades} | PnL={pnl_net*100:+.2f}% | WR={win_rate*100:.0f}%")
+                log.info(f"[CLOSE] Trade #{n_trades} | "
+                         f"PnL={pnl_net*100:+.2f}% ({pnl_usdt:+.2f} USDT)")
                 tg.notify_trade(
                     side       = "LONG" if prev_position == 1 else "SHORT",
                     entry      = entry_price,
                     exit_price = price,
+                    pnl_usdt   = pnl_usdt,
                     pnl_pct    = pnl_net,
                     n_trades   = n_trades,
-                    epsilon    = agent.epsilon,
                 )
-                entry_price = 0.0
+                entry_price   = 0.0
+                entry_balance = 0.0
 
             prev_obs    = obs
             prev_action = action
@@ -262,29 +265,9 @@ def main():
                 agent.save("checkpoints/dqn_latest.pth")
                 log.info(f"Checkpoint guardado (step {step})")
 
-            # ── Resumen periodico cada 100 steps ─────────────────────────
-            if step % 100 == 0 and n_trades > 0:
-                try:
-                    balance  = client.fetch_balance()["USDT"]["total"]
-                    ret      = (balance - config.INITIAL_CAP) / config.INITIAL_CAP
-                    win_rate = n_wins / n_trades
-                    tg.notify_summary(step, n_trades, win_rate, ret, agent.epsilon)
-                except Exception:
-                    pass
-
-            # ── Resumen diario a las 08:00 UTC ────────────────────────────
-            now_h = datetime.now(timezone.utc).hour
-            if now_h == 8 and last_summary_h != 8:
-                last_summary_h = 8
-                try:
-                    balance  = client.fetch_balance()["USDT"]["total"]
-                    ret      = (balance - config.INITIAL_CAP) / config.INITIAL_CAP
-                    win_rate = n_wins / n_trades if n_trades > 0 else 0.0
-                    tg.notify_summary(step, n_trades, win_rate, ret, agent.epsilon)
-                except Exception:
-                    pass
-            elif now_h != 8:
-                last_summary_h = -1
+            # ── Resumen cada 100 steps ───────────────────────────────────
+            if step % 100 == 0:
+                tg.notify_live_summary(pnl_usdt_hist, step, agent.epsilon)
 
             time.sleep(config.CHECK_INTERVAL_S)
 
