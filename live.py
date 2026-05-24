@@ -22,7 +22,6 @@ import pickle
 import logging
 import argparse
 from pathlib import Path
-from collections import deque
 from datetime import datetime, timezone
 
 import numpy as np
@@ -154,7 +153,7 @@ def main():
             try:
                 with open(BUFFER_PATH, "rb") as f:
                     saved = pickle.load(f)
-                agent.buffer.buf = deque(saved, maxlen=config.BUFFER_SIZE)
+                agent.buffer.load_from(saved)
                 log.info(f"Buffer cargado: {len(agent.buffer):,} experiencias previas")
             except Exception as e:
                 log.warning(f"No se pudo cargar buffer: {e}")
@@ -295,7 +294,7 @@ def main():
                 # Guardar buffer en disco — sobrevive reinicios
                 try:
                     with open(BUFFER_PATH, "wb") as f:
-                        pickle.dump(list(agent.buffer.buf), f)
+                        pickle.dump(agent.buffer.get_all(), f)
                     log.info(f"Checkpoint guardado (step {step}) | Buffer: {len(agent.buffer):,} exp")
                 except Exception as e:
                     log.warning(f"No se pudo guardar buffer: {e}")
@@ -312,7 +311,7 @@ def main():
             agent.save("checkpoints/dqn_latest.pth")
             try:
                 with open(BUFFER_PATH, "wb") as f:
-                    pickle.dump(list(agent.buffer.buf), f)
+                    pickle.dump(agent.buffer.get_all(), f)
                 log.info(f"Buffer guardado: {len(agent.buffer):,} experiencias")
             except Exception as e:
                 log.warning(f"No se pudo guardar buffer: {e}")

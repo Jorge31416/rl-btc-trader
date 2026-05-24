@@ -78,11 +78,18 @@ def download_history(candles: int) -> pd.DataFrame:
 
 
 def run_episode(env: TradingEnv, agent: DQNAgent,
-                training: bool = True) -> dict:
-    """Ejecuta un episodio completo y devuelve metricas."""
+                training: bool = True,
+                train_every: int = 4) -> dict:
+    """
+    Ejecuta un episodio completo y devuelve metricas.
+
+    train_every : entrenar cada N pasos (4 = 4x mas rapido, misma calidad)
+    El epsilon NO decae dentro del episodio — train.py lo controla por epoca.
+    """
     obs, _    = env.reset()
     total_rew = 0.0
     losses    = []
+    step_n    = 0
 
     while True:
         action               = agent.act(obs, training=training)
@@ -90,12 +97,15 @@ def run_episode(env: TradingEnv, agent: DQNAgent,
 
         if training:
             agent.remember(obs, action, rew, next_obs, done)
-            loss = agent.train_step()
-            if loss is not None:
-                losses.append(loss)
+            # Entrenar cada train_every pasos — equilibrio velocidad/calidad
+            if step_n % train_every == 0:
+                loss = agent.train_step(decay_epsilon=False)  # epsilon controlado por epoca
+                if loss is not None:
+                    losses.append(loss)
 
         total_rew += rew
         obs        = next_obs
+        step_n    += 1
 
         if done:
             break
@@ -158,7 +168,15 @@ def main():
     SUMMARY_EVERY = 5         # Telegram cada N epocas
     t_start       = time.time()
 
+    # Epsilon decae linealmente de 1.0 a EPSILON_MIN a lo largo del 70% de las epocas.
+    # El 30% final entrena con epsilon minimo (explotacion pura).
+    # Esto evita que epsilon caiga a 0.05 en los primeros 6000 pasos del episodio 1.
+    DECAY_UNTIL = int(args.epochs * 0.7)
+
     for ep in range(1, args.epochs + 1):
+        progress      = min(1.0, (ep - 1) / max(1, DECAY_UNTIL))
+        agent.epsilon = 1.0 - progress * (1.0 - config.EPSILON_MIN)
+
         t0      = time.time()
         metrics = run_episode(env, agent, training=True)
 
