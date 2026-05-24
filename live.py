@@ -178,7 +178,13 @@ def main():
     prev_action    = None
     prev_position  = 0        # posicion en el paso anterior (para calcular recompensa)
     pending_reward = 0.0      # recompensa del cierre pendiente de enviar al buffer
+    position_age   = 0        # pasos desde el ultimo cambio de posicion
     step           = 0
+
+    # Minimo de pasos antes de poder cambiar posicion.
+    # Evita flip-flop cuando los Q-values de LONG y SHORT son muy similares.
+    # Con velas de 5m → MIN_HOLD_STEPS=5 = minimo 25 minutos en cada posicion.
+    MIN_HOLD_STEPS = 5
 
     while True:
         try:
@@ -213,6 +219,13 @@ def main():
 
             # Decidir accion
             action     = agent.act(obs, training=True)
+
+            # Bloquear cambio de posicion si no ha pasado el minimo de pasos.
+            # Permite FLAT siempre (cortar perdidas no tiene restriccion).
+            if live_position != 0 and position_age < MIN_HOLD_STEPS:
+                if action != TradingEnv.FLAT:
+                    action = TradingEnv.LONG if live_position == 1 else TradingEnv.SHORT
+
             action_str = agent.ACTION_NAMES[action]
 
             # Calcular PnL latente para el log
@@ -231,6 +244,12 @@ def main():
             # Ejecutar accion
             prev_position = live_position
             live_position = execute_action(client, action, live_position, price)
+
+            # Actualizar edad de la posicion
+            if live_position != prev_position:
+                position_age = 0
+            else:
+                position_age += 1
 
             # ── Apertura de posicion ──────────────────────────────────────
             if prev_position == 0 and live_position != 0:
