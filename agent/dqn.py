@@ -1,5 +1,12 @@
 """
-Agente DQN (Deep Q-Network).
+Agente DQN (Deep Q-Network) — v2 con Dueling DQN.
+
+Mejoras respecto a v1:
+  - Dueling DQN: separa valor de estado V(s) y ventaja de accion A(s,a)
+    → el agente aprende mejor CUANDO actuar (V) separado de QUE hacer (A)
+  - Dropout(0.1): evita overfitting a periodos especificos del mercado
+  - Batch size 256 y LR 3e-4: gradientes mas estables
+  - Buffer 200k: mas diversidad de experiencias
 
 Mismo principio que los bots que aprenden a jugar Atari:
   - Red neuronal mapea estado -> valor de cada accion
@@ -22,21 +29,41 @@ import config
 log = logging.getLogger(__name__)
 
 
-# ── Red neuronal ──────────────────────────────────────────────────────────────
+# ── Red neuronal (Dueling DQN) ────────────────────────────────────────────────
 
 class QNetwork(nn.Module):
     """
-    Recibe el vector de estado y devuelve el Q-valor de cada accion.
-    Arquitectura: MLP con capas residuales para mejor gradiente.
+    Dueling DQN: divide la estimacion en dos streams independientes.
+
+    Q(s,a) = V(s) + A(s,a) - mean(A(s,·))
+
+    V(s) = valor de estar en el estado s (independiente de la accion)
+    A(s,a) = ventaja relativa de la accion a en el estado s
+
+    Ventaja: el agente aprende primero CUANDO hay oportunidad (V),
+    luego aprende que HACER en esa oportunidad (A).
+    Esto es mucho mejor para trading donde la mayoria de steps es
+    "sin oportunidad clara" (flat es igual de bueno que long/short).
     """
     def __init__(self, state_size: int, action_size: int):
         super().__init__()
         self.input_norm = nn.LayerNorm(state_size)
+
+        # Tronco compartido
         self.fc1  = nn.Linear(state_size, 256)
         self.fc2  = nn.Linear(256, 256)
         self.fc3  = nn.Linear(256, 128)
-        self.out  = nn.Linear(128, action_size)
         self.act  = nn.LeakyReLU(0.01)
+        self.drop = nn.Dropout(0.1)    # regularizacion: evita overfitting
+
+        # Stream de valor V(s): un solo numero
+        self.val_fc  = nn.Linear(128, 64)
+        self.val_out = nn.Linear(64, 1)
+
+        # Stream de ventaja A(s,a): un numero por accion
+        self.adv_fc  = nn.Linear(128, 64)
+        self.adv_out = nn.Linear(64, action_size)
+
         self._init_weights()
 
     def _init_weights(self):
@@ -44,14 +71,27 @@ class QNetwork(nn.Module):
             if isinstance(m, nn.Linear):
                 nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
                 nn.init.zeros_(m.bias)
-        nn.init.orthogonal_(self.out.weight, gain=0.01)
+        # Salidas con ganancia pequena para empezar con Q-valores cercanos a 0
+        for out in [self.val_out, self.adv_out]:
+            nn.init.orthogonal_(out.weight, gain=0.01)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.input_norm(x)
         x = self.act(self.fc1(x))
-        x = self.act(self.fc2(x)) + x     # skip connection
-        x = self.act(self.fc3(x))
-        return self.out(x)
+        x = self.act(self.fc2(x)) + x    # skip connection
+        x = self.drop(self.act(self.fc3(x)))
+
+        # V(s)
+        val = self.act(self.val_fc(x))
+        val = self.val_out(val)           # [B, 1]
+
+        # A(s,a)
+        adv = self.act(self.adv_fc(x))
+        adv = self.adv_out(adv)           # [B, action_size]
+
+        # Q(s,a) = V(s) + A(s,a) - mean_a(A(s,a))
+        # Restar la media estabiliza el entrenamiento
+        return val + (adv - adv.mean(dim=1, keepdim=True))
 
 
 # ── Replay buffer ─────────────────────────────────────────────────────────────
@@ -108,12 +148,13 @@ class DQNAgent:
         self.target_net.eval()
 
         self.optimizer = torch.optim.Adam(
-            self.q_net.parameters(), lr=config.LR
+            self.q_net.parameters(), lr=config.LR, eps=1e-5
         )
+        # LR decae a la mitad cada 20k pasos (entrenamiento largo)
         self.scheduler = torch.optim.lr_scheduler.StepLR(
-            self.optimizer, step_size=10000, gamma=0.5
+            self.optimizer, step_size=20_000, gamma=0.5
         )
-        self.loss_fn = nn.HuberLoss()
+        self.loss_fn = nn.HuberLoss(delta=1.0)
         self.buffer  = ReplayBuffer()
 
         # Exploracion epsilon-greedy
@@ -131,9 +172,11 @@ class DQNAgent:
         if training and random.random() < self.epsilon:
             return random.randrange(self.action_size)
 
+        self.q_net.eval()
         s = torch.FloatTensor(state).unsqueeze(0).to(self.device)
         with torch.no_grad():
             q = self.q_net(s)
+        self.q_net.train()
         return int(q.argmax().item())
 
     # ── Aprendizaje ───────────────────────────────────────────────────────────
@@ -154,11 +197,14 @@ class DQNAgent:
         ns = torch.FloatTensor(ns).to(self.device)
         d  = torch.FloatTensor(d).to(self.device)
 
+        self.q_net.train()
+
         # Q actual
         q_curr = self.q_net(s).gather(1, a.unsqueeze(1)).squeeze(1)
 
         # Q objetivo (Double DQN: accion elegida por q_net, valor por target_net)
         with torch.no_grad():
+            self.target_net.eval()
             best_a   = self.q_net(ns).argmax(1)
             q_next   = self.target_net(ns).gather(1, best_a.unsqueeze(1)).squeeze(1)
             q_target = r + config.GAMMA * q_next * (1 - d)
@@ -196,7 +242,7 @@ class DQNAgent:
             "epsilon":    self.epsilon,
             "steps":      self.steps,
         }, path)
-        log.info(f"Checkpoint guardado: {path} (eps={self.epsilon:.3f})")
+        log.info(f"Checkpoint guardado: {path} (eps={self.epsilon:.3f}, steps={self.steps:,})")
 
     def load(self, path: str = "checkpoints/dqn.pth"):
         ckpt = torch.load(path, map_location=self.device, weights_only=True)
@@ -205,4 +251,4 @@ class DQNAgent:
         self.optimizer.load_state_dict(ckpt["optimizer"])
         self.epsilon = ckpt["epsilon"]
         self.steps   = ckpt["steps"]
-        log.info(f"Checkpoint cargado: {path} (eps={self.epsilon:.3f}, steps={self.steps})")
+        log.info(f"Checkpoint cargado: {path} (eps={self.epsilon:.3f}, steps={self.steps:,})")

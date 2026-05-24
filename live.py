@@ -18,9 +18,11 @@ Uso:
 """
 import sys
 import time
+import pickle
 import logging
 import argparse
 from pathlib import Path
+from collections import deque
 from datetime import datetime, timezone
 
 import numpy as np
@@ -136,6 +138,8 @@ def main():
     env   = TradingEnv(df0)
     agent = DQNAgent(state_size=env.state_size)
 
+    BUFFER_PATH = Path("checkpoints/replay_buffer.pkl")
+
     if not args.fresh:
         for ckpt in ["checkpoints/dqn_best.pth", "checkpoints/dqn_latest.pth"]:
             if Path(ckpt).exists():
@@ -144,6 +148,16 @@ def main():
         else:
             log.info("Sin checkpoint previo — empezando con epsilon=1.0 (puro exploracion)")
             log.info("Consejo: ejecuta primero  python train.py  para pre-entrenar")
+
+        # Cargar replay buffer persistido (si existe)
+        if BUFFER_PATH.exists():
+            try:
+                with open(BUFFER_PATH, "rb") as f:
+                    saved = pickle.load(f)
+                agent.buffer.buf = deque(saved, maxlen=config.BUFFER_SIZE)
+                log.info(f"Buffer cargado: {len(agent.buffer):,} experiencias previas")
+            except Exception as e:
+                log.warning(f"No se pudo cargar buffer: {e}")
 
     log.info("=" * 55)
     log.info("  RL BTC BOT — aprendizaje continuo en vivo")
@@ -163,6 +177,8 @@ def main():
     pnl_usdt_hist  = []       # PnL en USDT por trade (para métricas)
     prev_obs       = None
     prev_action    = None
+    prev_position  = 0        # posicion en el paso anterior (para calcular recompensa)
+    pending_reward = 0.0      # recompensa del cierre pendiente de enviar al buffer
     step           = 0
 
     while True:
@@ -180,11 +196,20 @@ def main():
             env.entry_price = entry_price
 
             # Recompensa del paso anterior → buffer
+            # REWARD_SCALE = 100 escala las recompensas para que los gradientes no sean nulos.
+            # El cierre se calcula en el mismo tick donde entry_price todavia es valido,
+            # y se guarda en pending_reward para aplicar en el buffer del tick siguiente.
             if prev_obs is not None and prev_action is not None:
-                raw_reward = (
-                    (price - entry_price) / entry_price * live_position
-                    if live_position != 0 else 0.0
-                )
+                if pending_reward != 0.0:
+                    # Recompensa de cierre calculada el tick anterior
+                    raw_reward    = pending_reward
+                    pending_reward = 0.0
+                elif live_position != 0:
+                    # En posicion: penalizar drawdown grande (consistente con env)
+                    unreal = (price - entry_price) / entry_price * live_position
+                    raw_reward = -0.003 * config.REWARD_SCALE if unreal < -0.015 else 0.0
+                else:
+                    raw_reward = 0.0
                 agent.remember(prev_obs, prev_action, raw_reward, obs, False)
 
             # Decidir accion
@@ -233,6 +258,10 @@ def main():
                 n_trades += 1
                 pnl_usdt_hist.append(pnl_usdt)
 
+                # Guardar recompensa de cierre para el buffer del proximo tick
+                # (entry_price aun es valido aqui antes de resetearlo)
+                pending_reward = pnl_net * config.REWARD_SCALE
+
                 log.info(f"[CLOSE] Trade #{n_trades} | "
                          f"PnL={pnl_net*100:+.2f}% ({pnl_usdt:+.2f} USDT)")
                 tg.notify_trade(
@@ -263,7 +292,14 @@ def main():
             # ── Checkpoint periodico ──────────────────────────────────────
             if step % config.SAVE_EVERY_STEPS == 0:
                 agent.save("checkpoints/dqn_latest.pth")
-                log.info(f"Checkpoint guardado (step {step})")
+                # Guardar buffer en disco — sobrevive reinicios
+                try:
+                    with open(BUFFER_PATH, "wb") as f:
+                        pickle.dump(list(agent.buffer.buf), f)
+                    log.info(f"Checkpoint guardado (step {step}) | Buffer: {len(agent.buffer):,} exp")
+                except Exception as e:
+                    log.warning(f"No se pudo guardar buffer: {e}")
+                    log.info(f"Checkpoint guardado (step {step})")
 
             # ── Resumen cada 100 steps ───────────────────────────────────
             if step % 100 == 0:
@@ -272,8 +308,14 @@ def main():
             time.sleep(config.CHECK_INTERVAL_S)
 
         except KeyboardInterrupt:
-            log.info("Detenido por el usuario. Guardando checkpoint...")
+            log.info("Detenido por el usuario. Guardando checkpoint y buffer...")
             agent.save("checkpoints/dqn_latest.pth")
+            try:
+                with open(BUFFER_PATH, "wb") as f:
+                    pickle.dump(list(agent.buffer.buf), f)
+                log.info(f"Buffer guardado: {len(agent.buffer):,} experiencias")
+            except Exception as e:
+                log.warning(f"No se pudo guardar buffer: {e}")
             break
         except Exception as e:
             log.error(f"Error en tick: {e}", exc_info=True)

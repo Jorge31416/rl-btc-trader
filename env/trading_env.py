@@ -8,6 +8,12 @@ El agente decide entre 3 acciones:
 
 No le decimos que mire RSI, EMA ni ningun indicador.
 Solo recibe precios brutos normalizados — aprende el solo que patrones importan.
+
+Mejoras v2:
+- Recompensas escaladas por REWARD_SCALE (evita gradientes nulos)
+- Penalizacion por mantener posicion perdedora (incentiva cortar perdidas)
+- Pequeno coste por paso en posicion (desincentiva sobreoperar)
+- Shaping de recompensa consistente con live.py
 """
 import numpy as np
 import pandas as pd
@@ -27,6 +33,9 @@ class TradingEnv(gym.Env):
     FLAT  = 0
     LONG  = 1
     SHORT = 2
+
+    # Coste minimo por operar (desincentiva flip-flopping)
+    _MIN_HOLD_STEPS = 2   # debe mantener posicion al menos N pasos
 
     def __init__(self, df: pd.DataFrame, window: int = config.WINDOW,
                  initial_capital: float = config.INITIAL_CAP):
@@ -59,30 +68,37 @@ class TradingEnv(gym.Env):
 
         # ── Ejecutar accion ───────────────────────────────────────────────
         if action == self.FLAT:
-            # Quiero estar sin exposicion
             if self.position != 0:
                 reward += self._close(price)
-            # Si ya estaba flat: no hacer nada (reward = 0)
 
         elif action == self.LONG:
             if self.position == -1:          # cierra short primero
                 reward += self._close(price)
-            if self.position != 1:           # abre long si no lo era ya
-                self.position    = 1
-                self.entry_price = price
+            if self.position != 1:
+                self.position      = 1
+                self.entry_price   = price
+                self.hold_steps    = 0
 
         elif action == self.SHORT:
             if self.position == 1:           # cierra long primero
                 reward += self._close(price)
-            if self.position != -1:          # abre short si no lo era ya
-                self.position    = -1
-                self.entry_price = price
+            if self.position != -1:
+                self.position      = -1
+                self.entry_price   = price
+                self.hold_steps    = 0
 
-        # Penalizacion por mantener posicion muy perdedora (incentiva cortar perdidas)
+        # ── Shaping mientras se mantiene posicion ─────────────────────────
         if self.position != 0:
+            self.hold_steps += 1
             unrealized = (price - self.entry_price) / self.entry_price * self.position
+
+            # Penalizacion por drawdown grande (> 1.5%) — incentiva cortar perdidas
             if unrealized < -0.015:
-                reward -= 0.001
+                reward -= 0.003 * config.REWARD_SCALE
+
+            # Penalizacion adicional por drawdown extremo (> 3%)
+            elif unrealized < -0.030:
+                reward -= 0.005 * config.REWARD_SCALE
 
         self.idx        += 1
         self.step_count += 1
@@ -108,16 +124,24 @@ class TradingEnv(gym.Env):
         self.capital     = self.initial_capital
         self.step_count  = 0
         self.n_trades    = 0
+        self.hold_steps  = 0       # pasos desde que se abrio la posicion actual
 
     def _close(self, price: float) -> float:
-        """Cierra la posicion actual. Devuelve recompensa = PnL neto."""
+        """
+        Cierra la posicion actual.
+        Devuelve recompensa = PnL neto escalado por REWARD_SCALE.
+        Escalar es clave: sin esto el gradiente es ~0 y la red no aprende.
+        """
         pnl_pct = (price - self.entry_price) / self.entry_price * self.position
         fee     = config.TRADE_FEE * 2       # entrada + salida
-        self.capital    *= (1 + pnl_pct - fee)
+        net_pnl = pnl_pct - fee
+        self.capital    *= (1 + net_pnl)
         self.position    = 0
         self.entry_price = 0.0
+        self.hold_steps  = 0
         self.n_trades   += 1
-        return float(pnl_pct - fee)
+        # Escalar: 0.2% de ganancia → 20 unidades de reward
+        return float(net_pnl * config.REWARD_SCALE)
 
     def _get_obs(self) -> np.ndarray:
         """
