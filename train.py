@@ -19,6 +19,7 @@ Uso:
     python train.py --resume                 # continua desde checkpoint existente
 """
 import sys
+import random
 import logging
 import argparse
 import time
@@ -77,43 +78,56 @@ def download_history(candles: int) -> pd.DataFrame:
     return df.astype(float)
 
 
-def run_episode(env: TradingEnv, agent: DQNAgent,
-                training: bool = True,
-                train_every: int = 4) -> dict:
+SUB_EPISODE_LEN = 500   # pasos por sub-episodio — con 500 pasos aleatorios
+                        # el agente nunca puede quebrar por fees
+SUBS_PER_EPOCH  = 100  # sub-episodios por epoca — 100x500 = 50k pasos/epoca
+
+
+def run_epoch(env: TradingEnv, agent: DQNAgent,
+              training: bool = True, train_every: int = 4) -> dict:
     """
-    Ejecuta un episodio completo y devuelve metricas.
+    Ejecuta una epoca = SUBS_PER_EPOCH sub-episodios cortos sobre ventanas
+    aleatorias de los datos historicos.
 
-    train_every : entrenar cada N pasos (4 = 4x mas rapido, misma calidad)
-    El epsilon NO decae dentro del episodio — train.py lo controla por epoca.
+    Ventajas vs un episodio unico de 200k pasos:
+    - Nunca hay bancarrota por fees en exploracion aleatoria
+    - El agente ve condiciones de mercado diversas en cada epoch
+    - Equivalente a "jugar muchas partidas cortas" como Atari
+    - ~4x mas rapido que recorrer los 200k pasos completos
     """
-    obs, _    = env.reset()
-    total_rew = 0.0
-    losses    = []
-    step_n    = 0
+    max_start   = len(env.df) - SUB_EPISODE_LEN - env.window - 2
+    capitals    = []
+    total_trades= 0
+    losses      = []
 
-    while True:
-        action               = agent.act(obs, training=training)
-        next_obs, rew, done, _, info = env.step(action)
+    for _ in range(SUBS_PER_EPOCH):
+        start = random.randint(env.window, max_start)
+        obs, _ = env.reset(options={"start_idx": start,
+                                    "episode_len": SUB_EPISODE_LEN})
+        step_n = 0
 
-        if training:
-            agent.remember(obs, action, rew, next_obs, done)
-            # Entrenar cada train_every pasos — equilibrio velocidad/calidad
-            if step_n % train_every == 0:
-                loss = agent.train_step(decay_epsilon=False)  # epsilon controlado por epoca
-                if loss is not None:
-                    losses.append(loss)
+        while True:
+            action               = agent.act(obs, training=training)
+            next_obs, rew, done, _, info = env.step(action)
 
-        total_rew += rew
-        obs        = next_obs
-        step_n    += 1
+            if training:
+                agent.remember(obs, action, rew, next_obs, done)
+                if step_n % train_every == 0:
+                    loss = agent.train_step(decay_epsilon=False)
+                    if loss is not None:
+                        losses.append(loss)
 
-        if done:
-            break
+            obs     = next_obs
+            step_n += 1
+            if done:
+                break
+
+        capitals.append(info["capital"])
+        total_trades += info["n_trades"]
 
     return {
-        "reward":   total_rew,
-        "capital":  info["capital"],
-        "n_trades": info["n_trades"],
+        "capital":  float(np.mean(capitals)),
+        "n_trades": total_trades // SUBS_PER_EPOCH,  # media por sub-episodio
         "loss":     float(np.mean(losses)) if losses else 0.0,
         "epsilon":  agent.epsilon,
     }
@@ -178,10 +192,9 @@ def main():
         agent.epsilon = 1.0 - progress * (1.0 - config.EPSILON_MIN)
 
         t0      = time.time()
-        metrics = run_episode(env, agent, training=True)
+        metrics = run_epoch(env, agent, training=True)
 
         capital   = metrics["capital"]
-        total_rew = metrics["reward"]
         n_trades  = metrics["n_trades"]
         loss      = metrics["loss"]
         epsilon   = metrics["epsilon"]

@@ -58,8 +58,16 @@ class TradingEnv(gym.Env):
     # ── Gym API ───────────────────────────────────────────────────────────────
 
     def reset(self, seed=None, options=None):
+        """
+        options puede contener:
+          start_idx  : vela desde la que empieza el episodio (int)
+          episode_len: duracion maxima en pasos (int)
+        """
         super().reset(seed=seed)
-        self._reset_state()
+        opts       = options or {}
+        start_idx  = opts.get("start_idx",   self.window)
+        episode_len= opts.get("episode_len", None)
+        self._reset_state(start_idx=start_idx, episode_len=episode_len)
         return self._get_obs(), {}
 
     def step(self, action: int):
@@ -102,7 +110,7 @@ class TradingEnv(gym.Env):
 
         self.idx        += 1
         self.step_count += 1
-        done = self.idx >= len(self.df) - 1
+        done = self.idx >= self.end_idx
 
         # Forzar cierre al final del episodio
         if done and self.position != 0:
@@ -117,8 +125,10 @@ class TradingEnv(gym.Env):
 
     # ── Internos ──────────────────────────────────────────────────────────────
 
-    def _reset_state(self):
-        self.idx         = self.window
+    def _reset_state(self, start_idx: int = None, episode_len: int = None):
+        self.idx         = start_idx if start_idx is not None else self.window
+        self.end_idx     = (self.idx + episode_len) if episode_len else len(self.df) - 1
+        self.end_idx     = min(self.end_idx, len(self.df) - 1)
         self.position    = 0        # -1 short | 0 flat | 1 long
         self.entry_price = 0.0
         self.capital     = self.initial_capital
