@@ -179,12 +179,16 @@ def main():
     prev_position  = 0        # posicion en el paso anterior (para calcular recompensa)
     pending_reward = 0.0      # recompensa del cierre pendiente de enviar al buffer
     position_age   = 0        # pasos desde el ultimo cambio de posicion
+    flat_cooldown  = 0        # pasos de espera tras un cierre antes de abrir de nuevo
     step           = 0
 
     # Minimo de pasos antes de poder cambiar posicion.
-    # Evita flip-flop cuando los Q-values de LONG y SHORT son muy similares.
     # Con velas de 5m → MIN_HOLD_STEPS=5 = minimo 25 minutos en cada posicion.
-    MIN_HOLD_STEPS = 5
+    MIN_HOLD_STEPS  = 5
+    # Pasos de espera tras cerrar (FLAT) antes de poder abrir de nuevo.
+    # Evita abrir-cerrar-abrir en minutos consecutivos pagando fees en cada intento.
+    # Con velas de 5m → FLAT_COOLDOWN=3 = esperar 15 min tras un cierre.
+    FLAT_COOLDOWN   = 3
 
     while True:
         try:
@@ -226,6 +230,10 @@ def main():
                 if action != TradingEnv.FLAT:
                     action = TradingEnv.LONG if live_position == 1 else TradingEnv.SHORT
 
+            # Cooldown tras FLAT: no abrir posicion nueva hasta que pasen FLAT_COOLDOWN pasos.
+            if live_position == 0 and flat_cooldown > 0:
+                action = TradingEnv.FLAT  # forzar espera
+
             action_str = agent.ACTION_NAMES[action]
 
             # Calcular PnL latente para el log
@@ -245,11 +253,15 @@ def main():
             prev_position = live_position
             live_position = execute_action(client, action, live_position, price)
 
-            # Actualizar edad de la posicion
+            # Actualizar edad de posicion y cooldown
             if live_position != prev_position:
                 position_age = 0
+                if live_position == 0:          # acaba de cerrar → iniciar cooldown
+                    flat_cooldown = FLAT_COOLDOWN
             else:
                 position_age += 1
+                if flat_cooldown > 0:
+                    flat_cooldown -= 1
 
             # ── Apertura de posicion ──────────────────────────────────────
             if prev_position == 0 and live_position != 0:
