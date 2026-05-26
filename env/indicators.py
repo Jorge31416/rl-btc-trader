@@ -10,7 +10,7 @@ import pandas as pd
 
 def rsi_norm(close: pd.Series, period: int = 14) -> np.ndarray:
     """RSI normalizado a [-0.5, +0.5]. 0 = neutral, +0.5 = sobrecompra, -0.5 = sobreventa."""
-    delta = close.diff()
+    delta = close.diff().fillna(0)   # primer elemento NaN → 0 (sin cambio)
     gain  = delta.clip(lower=0).rolling(period, min_periods=1).mean()
     loss  = (-delta.clip(upper=0)).rolling(period, min_periods=1).mean()
     rs    = gain / (loss + 1e-9)

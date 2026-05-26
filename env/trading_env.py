@@ -244,4 +244,5 @@ class TradingEnv(gym.Env):
         obs = np.concatenate(
             [features_5m, features_1h, [pos_enc, pnl_lat]]
         ).astype(np.float32)
+        obs = np.nan_to_num(obs, nan=0.0, posinf=10.0, neginf=-10.0)
         return np.clip(obs, -10.0, 10.0)
