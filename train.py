@@ -182,14 +182,15 @@ def main():
     SUMMARY_EVERY = 5         # Telegram cada N epocas
     t_start       = time.time()
 
-    # Epsilon decae linealmente de 1.0 a EPSILON_MIN a lo largo del 70% de las epocas.
-    # El 30% final entrena con epsilon minimo (explotacion pura).
-    # Esto evita que epsilon caiga a 0.05 en los primeros 6000 pasos del episodio 1.
-    DECAY_UNTIL = int(args.epochs * 0.7)
+    # Epsilon decae linealmente desde el valor inicial hasta EPSILON_MIN.
+    # Si se retoma con --resume, empieza desde el epsilon del checkpoint (ej. 0.20),
+    # no desde 1.0 — ya se exploró suficiente en el entrenamiento anterior.
+    DECAY_UNTIL   = int(args.epochs * 0.7)
+    start_epsilon = agent.epsilon   # 1.0 si fresco, 0.20 si --resume
 
     for ep in range(1, args.epochs + 1):
         progress      = min(1.0, (ep - 1) / max(1, DECAY_UNTIL))
-        agent.epsilon = 1.0 - progress * (1.0 - config.EPSILON_MIN)
+        agent.epsilon = start_epsilon - progress * (start_epsilon - config.EPSILON_MIN)
 
         t0      = time.time()
         metrics = run_epoch(env, agent, training=True)
