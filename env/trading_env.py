@@ -1,52 +1,83 @@
 """
-Entorno de trading compatible con Gymnasium.
+Entorno de trading compatible con Gymnasium — v3 con indicadores + multi-timeframe.
 
-El agente decide entre 3 acciones:
-  0 = FLAT   — sin posicion: no hacer nada / con posicion: cerrar
-  1 = LONG   — abrir/mantener long  (si habia short, lo cierra primero)
-  2 = SHORT  — abrir/mantener short (si habia long, lo cierra primero)
+Estado del agente (432 features):
+  - 50 velas de 5m × 7 features = 350
+      ret, h_rel, l_rel, o_rel, v_rel   (precio bruto normalizado)
+      rsi_norm, bb_pct_norm             (indicadores tectnicos, nuevos)
+  - 20 velas de 1h × 4 features = 80
+      ret_1h, v_rel_1h, rsi_1h, bb_1h  (contexto de tendencia mayor)
+  - 2 features de posicion
+      pos_enc, pnl_latente
 
-No le decimos que mire RSI, EMA ni ningun indicador.
-Solo recibe precios brutos normalizados — aprende el solo que patrones importan.
-
-Mejoras v2:
-- Recompensas escaladas por REWARD_SCALE (evita gradientes nulos)
-- Penalizacion por mantener posicion perdedora (incentiva cortar perdidas)
-- Pequeno coste por paso en posicion (desincentiva sobreoperar)
-- Shaping de recompensa consistente con live.py
+El RSI y las Bandas de Bollinger dan al agente señales mas directas
+de sobrecompra/sobreventa sin eliminar el enfoque de RL puro —
+la red sigue aprendiendo CUANDO y COMO usar esas señales.
 """
 import numpy as np
 import pandas as pd
 import gymnasium as gym
 from gymnasium import spaces
 import config
+from env.indicators import rsi_norm, bb_pct_norm
 
 
 class TradingEnv(gym.Env):
-    """
-    Parametros
-    ----------
-    df : DataFrame con columnas [open, high, low, close, volume]
-    window : numero de velas pasadas que ve el agente como estado
-    """
 
     FLAT  = 0
     LONG  = 1
     SHORT = 2
 
-    # Coste minimo por operar (desincentiva flip-flopping)
-    _MIN_HOLD_STEPS = 2   # debe mantener posicion al menos N pasos
+    WINDOW_1H = 20   # ultimas 20 velas de 1h como contexto de tendencia
 
-    def __init__(self, df: pd.DataFrame, window: int = config.WINDOW,
+    def __init__(self, df_5m: pd.DataFrame, df_1h: pd.DataFrame = None,
+                 window: int = config.WINDOW,
                  initial_capital: float = config.INITIAL_CAP):
         super().__init__()
-        self.df              = df.reset_index(drop=True)
+
+        self.df              = df_5m.reset_index(drop=True)
         self.window          = window
         self.initial_capital = initial_capital
 
-        # Estado: window velas * 5 features (ret, h/c, l/c, o/c, vol_ratio)
-        #         + 2 valores de posicion (pos_enc, pnl_unrealizado)
-        self.state_size = window * 5 + 2
+        # ── Pre-computar indicadores 5m ───────────────────────────────────────
+        # Una sola vez al crear el entorno — O(N), no O(N) por step
+        close_5m      = df_5m["close"]
+        self._rsi_5m  = rsi_norm(close_5m)       # shape (N,)
+        self._bb_5m   = bb_pct_norm(close_5m)    # shape (N,)
+
+        # ── Pre-computar indicadores 1h ───────────────────────────────────────
+        self.has_1h = df_1h is not None
+        if self.has_1h:
+            self.df_1h       = df_1h.reset_index(drop=True)
+            close_1h         = df_1h["close"]
+            self._rsi_1h     = rsi_norm(close_1h)
+            self._bb_1h      = bb_pct_norm(close_1h)
+
+            # Mapeado 5m → 1h: BTC opera 24/7, 1h = exactamente 12 velas de 5m
+            # Para cada indice 5m, el indice 1h correspondiente es idx // 12
+            n_1h = len(self.df_1h)
+            self._1h_of      = np.clip(
+                np.arange(len(self.df)) // 12,
+                self.WINDOW_1H, n_1h - 1
+            )
+            # Pre-computar features 1h como array numpy (N_1h, 4) para acceso rapido
+            c1h = self.df_1h["close"].values
+            v1h = self.df_1h["volume"].values
+            v1h_mean = np.convolve(v1h, np.ones(20)/20, mode="same") + 1e-9
+            ret_1h = np.diff(c1h, prepend=c1h[0]) / (c1h + 1e-9)
+            vr_1h  = v1h / v1h_mean
+            self._feat_1h = np.column_stack([
+                ret_1h,
+                vr_1h,
+                self._rsi_1h,
+                self._bb_1h,
+            ]).astype(np.float32)   # (N_1h, 4)
+
+        # ── Espacio de observacion ────────────────────────────────────────────
+        feat_5m = window * 7                              # 350
+        feat_1h = self.WINDOW_1H * 4 if self.has_1h else 0  # 80
+        self.state_size = feat_5m + feat_1h + 2          # 432
+
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf,
             shape=(self.state_size,), dtype=np.float32
@@ -58,15 +89,10 @@ class TradingEnv(gym.Env):
     # ── Gym API ───────────────────────────────────────────────────────────────
 
     def reset(self, seed=None, options=None):
-        """
-        options puede contener:
-          start_idx  : vela desde la que empieza el episodio (int)
-          episode_len: duracion maxima en pasos (int)
-        """
         super().reset(seed=seed)
         opts       = options or {}
-        start_idx  = opts.get("start_idx",   self.window)
-        episode_len= opts.get("episode_len", None)
+        start_idx  = opts.get("start_idx",    self.window)
+        episode_len= opts.get("episode_len",  None)
         self._reset_state(start_idx=start_idx, episode_len=episode_len)
         return self._get_obs(), {}
 
@@ -74,45 +100,39 @@ class TradingEnv(gym.Env):
         price  = float(self.df["close"].iloc[self.idx])
         reward = 0.0
 
-        # ── Ejecutar accion ───────────────────────────────────────────────
         if action == self.FLAT:
             if self.position != 0:
                 reward += self._close(price)
 
         elif action == self.LONG:
-            if self.position == -1:          # cierra short primero
+            if self.position == -1:
                 reward += self._close(price)
             if self.position != 1:
-                self.position      = 1
-                self.entry_price   = price
-                self.hold_steps    = 0
+                self.position    = 1
+                self.entry_price = price
+                self.hold_steps  = 0
 
         elif action == self.SHORT:
-            if self.position == 1:           # cierra long primero
+            if self.position == 1:
                 reward += self._close(price)
             if self.position != -1:
-                self.position      = -1
-                self.entry_price   = price
-                self.hold_steps    = 0
+                self.position    = -1
+                self.entry_price = price
+                self.hold_steps  = 0
 
-        # ── Shaping mientras se mantiene posicion ─────────────────────────
+        # Penalizacion por drawdown grande
         if self.position != 0:
             self.hold_steps += 1
             unrealized = (price - self.entry_price) / self.entry_price * self.position
-
-            # Penalizacion por drawdown grande (> 1.5%) — incentiva cortar perdidas
             if unrealized < -0.015:
                 reward -= 0.003 * config.REWARD_SCALE
-
-            # Penalizacion adicional por drawdown extremo (> 3%)
-            elif unrealized < -0.030:
+            if unrealized < -0.030:
                 reward -= 0.005 * config.REWARD_SCALE
 
         self.idx        += 1
         self.step_count += 1
         done = self.idx >= self.end_idx
 
-        # Forzar cierre al final del episodio
         if done and self.position != 0:
             price   = float(self.df["close"].iloc[-1])
             reward += self._close(price)
@@ -125,59 +145,103 @@ class TradingEnv(gym.Env):
 
     # ── Internos ──────────────────────────────────────────────────────────────
 
+    def refresh_live(self, df_5m: pd.DataFrame, df_1h: pd.DataFrame = None):
+        """
+        Actualiza los datos y re-calcula los indicadores para el tick en vivo.
+        Llamar antes de _get_obs() cada vez que llegan datos frescos del exchange.
+        """
+        self.df    = df_5m.reset_index(drop=True)
+        self.idx   = len(self.df) - 1
+
+        close_5m       = df_5m["close"]
+        self._rsi_5m   = rsi_norm(close_5m)
+        self._bb_5m    = bb_pct_norm(close_5m)
+
+        if df_1h is not None and self.has_1h:
+            self.df_1h     = df_1h.reset_index(drop=True)
+            close_1h       = df_1h["close"]
+            self._rsi_1h   = rsi_norm(close_1h)
+            self._bb_1h    = bb_pct_norm(close_1h)
+
+            n_1h           = len(self.df_1h)
+            self._1h_of    = np.clip(
+                np.arange(len(self.df)) // 12,
+                self.WINDOW_1H, n_1h - 1
+            )
+            c1h            = self.df_1h["close"].values
+            v1h            = self.df_1h["volume"].values
+            v1h_mean       = np.convolve(v1h, np.ones(20)/20, mode="same") + 1e-9
+            ret_1h         = np.diff(c1h, prepend=c1h[0]) / (c1h + 1e-9)
+            vr_1h          = v1h / v1h_mean
+            self._feat_1h  = np.column_stack([
+                ret_1h, vr_1h, self._rsi_1h, self._bb_1h,
+            ]).astype(np.float32)
+
     def _reset_state(self, start_idx: int = None, episode_len: int = None):
         self.idx         = start_idx if start_idx is not None else self.window
         self.end_idx     = (self.idx + episode_len) if episode_len else len(self.df) - 1
         self.end_idx     = min(self.end_idx, len(self.df) - 1)
-        self.position    = 0        # -1 short | 0 flat | 1 long
+        self.position    = 0
         self.entry_price = 0.0
         self.capital     = self.initial_capital
         self.step_count  = 0
         self.n_trades    = 0
-        self.hold_steps  = 0       # pasos desde que se abrio la posicion actual
+        self.hold_steps  = 0
 
     def _close(self, price: float) -> float:
-        """
-        Cierra la posicion actual.
-        Devuelve recompensa = PnL neto escalado por REWARD_SCALE.
-        Escalar es clave: sin esto el gradiente es ~0 y la red no aprende.
-        """
         pnl_pct = (price - self.entry_price) / self.entry_price * self.position
-        fee     = config.TRADE_FEE * 2       # entrada + salida
+        fee     = config.TRADE_FEE * 2
         net_pnl = pnl_pct - fee
         self.capital    *= (1 + net_pnl)
         self.position    = 0
         self.entry_price = 0.0
         self.hold_steps  = 0
         self.n_trades   += 1
-        # Escalar: 0.2% de ganancia → 20 unidades de reward
         return float(net_pnl * config.REWARD_SCALE)
 
     def _get_obs(self) -> np.ndarray:
-        """
-        Estado = ultimas WINDOW velas normalizadas.
-        Retornos relativos (no precios absolutos) — el agente aprende
-        patrones de movimiento, no niveles de precio.
-        """
         w   = self.df.iloc[self.idx - self.window: self.idx]
         c   = w["close"].values
         eps = 1e-9
 
-        ret   = np.diff(c, prepend=c[0]) / (c + eps)   # retorno vela a vela
-        h_rel = (w["high"].values  - c) / (c + eps)    # mecha superior
-        l_rel = (w["low"].values   - c) / (c + eps)    # mecha inferior
-        o_rel = (w["open"].values  - c) / (c + eps)    # apertura vs cierre
+        # ── Features 5m ──────────────────────────────────────────────────────
+        ret   = np.diff(c, prepend=c[0]) / (c + eps)
+        h_rel = (w["high"].values  - c) / (c + eps)
+        l_rel = (w["low"].values   - c) / (c + eps)
+        o_rel = (w["open"].values  - c) / (c + eps)
         vol   = w["volume"].values
         v_rel = vol / (np.convolve(vol, np.ones(20)/20, mode="same") + eps)
 
-        features = np.column_stack([ret, h_rel, l_rel, o_rel, v_rel]).flatten()
+        rsi_w = self._rsi_5m[self.idx - self.window: self.idx]
+        bb_w  = self._bb_5m [self.idx - self.window: self.idx]
 
-        # Posicion actual y PnL latente
+        features_5m = np.column_stack(
+            [ret, h_rel, l_rel, o_rel, v_rel, rsi_w, bb_w]
+        ).flatten()   # 350
+
+        # ── Features 1h ──────────────────────────────────────────────────────
+        if self.has_1h:
+            idx_1h  = int(self._1h_of[self.idx])
+            start_1h = max(0, idx_1h - self.WINDOW_1H)
+            chunk   = self._feat_1h[start_1h: idx_1h]  # (≤20, 4)
+
+            # Rellenar con ceros si hay menos de WINDOW_1H velas disponibles
+            if len(chunk) < self.WINDOW_1H:
+                pad = np.zeros((self.WINDOW_1H - len(chunk), 4), dtype=np.float32)
+                chunk = np.vstack([pad, chunk])
+
+            features_1h = chunk.flatten()   # 80
+        else:
+            features_1h = np.array([], dtype=np.float32)
+
+        # ── Posicion ──────────────────────────────────────────────────────────
         price   = c[-1]
         pos_enc = float(self.position)
         pnl_lat = 0.0
         if self.position != 0 and self.entry_price > 0:
             pnl_lat = (price - self.entry_price) / self.entry_price * self.position
 
-        obs = np.concatenate([features, [pos_enc, pnl_lat]]).astype(np.float32)
+        obs = np.concatenate(
+            [features_5m, features_1h, [pos_enc, pnl_lat]]
+        ).astype(np.float32)
         return np.clip(obs, -10.0, 10.0)
