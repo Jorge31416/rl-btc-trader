@@ -18,6 +18,7 @@ Uso:
 """
 import sys
 import time
+import json
 import pickle
 import logging
 import argparse
@@ -139,6 +140,7 @@ def main():
     agent  = DQNAgent(state_size=env.state_size)
 
     BUFFER_PATH = Path("checkpoints/replay_buffer.pkl")
+    STATE_PATH  = Path("checkpoints/bot_state.json")
 
     if not args.fresh:
         for ckpt in ["checkpoints/dqn_best.pth", "checkpoints/dqn_latest.pth"]:
@@ -182,6 +184,21 @@ def main():
     position_age   = 0        # pasos desde el ultimo cambio de posicion
     flat_cooldown  = 0        # pasos de espera tras un cierre antes de abrir de nuevo
     step           = 0
+
+    # Restaurar estado del bot si existe (sobrevive reinicios)
+    if not args.fresh and STATE_PATH.exists():
+        try:
+            saved_state = json.loads(STATE_PATH.read_text())
+            live_position = saved_state.get("live_position", 0)
+            entry_price   = saved_state.get("entry_price",   0.0)
+            entry_balance = saved_state.get("entry_balance", 0.0)
+            n_trades      = saved_state.get("n_trades",      0)
+            step          = saved_state.get("step",          0)
+            pnl_usdt_hist = saved_state.get("pnl_usdt_hist", [])
+            pos_str = {1: "LONG", -1: "SHORT", 0: "FLAT"}.get(live_position, "?")
+            log.info(f"Estado restaurado: pos={pos_str} entry={entry_price:.2f} trades={n_trades} step={step}")
+        except Exception as e:
+            log.warning(f"No se pudo restaurar estado del bot: {e}")
 
     # Minimo de pasos antes de poder cambiar posicion.
     # Con velas de 5m → MIN_HOLD_STEPS=5 = minimo 25 minutos en cada posicion.
@@ -332,6 +349,18 @@ def main():
                 except Exception as e:
                     log.warning(f"No se pudo guardar buffer: {e}")
                     log.info(f"Checkpoint guardado (step {step})")
+                # Guardar estado del bot — restaura posicion tras reinicio
+                try:
+                    STATE_PATH.write_text(json.dumps({
+                        "live_position": live_position,
+                        "entry_price":   entry_price,
+                        "entry_balance": entry_balance,
+                        "n_trades":      n_trades,
+                        "step":          step,
+                        "pnl_usdt_hist": pnl_usdt_hist,
+                    }))
+                except Exception as e:
+                    log.warning(f"No se pudo guardar estado del bot: {e}")
 
             # ── Resumen cada 100 steps ───────────────────────────────────
             if step % 100 == 0:
@@ -348,6 +377,18 @@ def main():
                 log.info(f"Buffer guardado: {len(agent.buffer):,} experiencias")
             except Exception as e:
                 log.warning(f"No se pudo guardar buffer: {e}")
+            try:
+                STATE_PATH.write_text(json.dumps({
+                    "live_position": live_position,
+                    "entry_price":   entry_price,
+                    "entry_balance": entry_balance,
+                    "n_trades":      n_trades,
+                    "step":          step,
+                    "pnl_usdt_hist": pnl_usdt_hist,
+                }))
+                log.info(f"Estado guardado: pos={live_position} entry={entry_price:.2f}")
+            except Exception as e:
+                log.warning(f"No se pudo guardar estado del bot: {e}")
             break
         except Exception as e:
             log.error(f"Error en tick: {e}", exc_info=True)
