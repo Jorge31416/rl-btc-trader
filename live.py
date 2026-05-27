@@ -72,7 +72,8 @@ def get_obs(df: pd.DataFrame, df_1h: pd.DataFrame, env: TradingEnv) -> np.ndarra
 # ── Ejecucion de ordenes ──────────────────────────────────────────────────────
 
 def execute_action(client: BinanceDemoClient, action: int,
-                   current_position: int, price: float) -> int:
+                   current_position: int, price: float,
+                   virtual_capital: float = 3000.0) -> int:
     """
     Ejecuta la accion en Binance Demo.
     Devuelve la nueva posicion resultante.
@@ -89,21 +90,19 @@ def execute_action(client: BinanceDemoClient, action: int,
         elif action == TradingEnv.LONG and current_position != 1:
             if current_position == -1:
                 _close_all(client)
-            balance = client.fetch_balance()["USDT"]["free"]
-            qty = round(balance * 0.20 / price, 3)
+            qty = round(virtual_capital * 0.20 / price, 3)
             if qty > 0:
                 client.create_market_order(sym, "buy", qty)
-                log.info(f"[LIVE] LONG {qty} BTC @ {price:.2f}")
+                log.info(f"[LIVE] LONG {qty} BTC @ {price:.2f} (capital virtual: {virtual_capital:.0f})")
             return 1
 
         elif action == TradingEnv.SHORT and current_position != -1:
             if current_position == 1:
                 _close_all(client)
-            balance = client.fetch_balance()["USDT"]["free"]
-            qty = round(balance * 0.20 / price, 3)
+            qty = round(virtual_capital * 0.20 / price, 3)
             if qty > 0:
                 client.create_market_order(sym, "sell", qty)
-                log.info(f"[LIVE] SHORT {qty} BTC @ {price:.2f}")
+                log.info(f"[LIVE] SHORT {qty} BTC @ {price:.2f} (capital virtual: {virtual_capital:.0f})")
             return -1
 
     except Exception as e:
@@ -269,8 +268,10 @@ def main():
             )
 
             # Ejecutar accion
+            virtual_capital = config.INITIAL_CAP + sum(pnl_usdt_hist)
             prev_position = live_position
-            live_position = execute_action(client, action, live_position, price)
+            live_position = execute_action(client, action, live_position, price,
+                                           virtual_capital=virtual_capital)
 
             # Actualizar edad de posicion y cooldown
             if live_position != prev_position:

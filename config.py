@@ -17,7 +17,7 @@ TIMEFRAME = "5m"
 
 # ── Entorno de trading ────────────────────────────────────────────────────────
 WINDOW        = 50          # velas que ve el agente como estado
-INITIAL_CAP   = 1000.0      # capital inicial en USDT
+INITIAL_CAP   = 3000.0      # capital inicial en USDT
 TRADE_FEE     = 0.0004      # 0.04% por operacion (Binance futures)
 
 # ── DQN ───────────────────────────────────────────────────────────────────────
