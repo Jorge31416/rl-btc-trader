@@ -283,11 +283,45 @@ def main():
                 if flat_cooldown > 0:
                     flat_cooldown -= 1
 
-            # ── Apertura de posicion ──────────────────────────────────────
-            if prev_position == 0 and live_position != 0:
-                entry_price   = price
+            # ── Flip directo LONG→SHORT o SHORT→LONG ─────────────────────
+            # Tratarlo como cierre + apertura en el mismo tick
+            if prev_position != 0 and live_position != 0 and live_position != prev_position:
+                # Cierre de la posicion anterior
+                pnl_pct  = (price - entry_price) / entry_price * prev_position
+                fee      = config.TRADE_FEE * 2
+                pnl_net  = pnl_pct - fee
+                pnl_usdt = pnl_net * entry_balance
+                n_trades += 1
+                pnl_usdt_hist.append(pnl_usdt)
+                pending_reward = pnl_net * config.REWARD_SCALE
+                log.info(f"[CLOSE] Trade #{n_trades} | "
+                         f"PnL={pnl_net*100:+.2f}% ({pnl_usdt:+.2f} USDT)")
+                tg.notify_trade(
+                    side       = "LONG" if prev_position == 1 else "SHORT",
+                    entry      = entry_price,
+                    exit_price = price,
+                    pnl_usdt   = pnl_usdt,
+                    pnl_pct    = pnl_net,
+                    n_trades   = n_trades,
+                )
+                # Apertura de la nueva posicion
+                entry_price = price
+                virtual_capital = config.INITIAL_CAP + sum(pnl_usdt_hist)
                 try:
-                    entry_balance = client.fetch_balance()["USDT"]["total"]
+                    entry_balance = virtual_capital
+                except Exception:
+                    entry_balance = config.INITIAL_CAP
+                side_str = "LONG" if live_position == 1 else "SHORT"
+                log.info(f"[OPEN] {side_str} @ {price:.2f}")
+                tg.notify_position_open(side=side_str, price=price,
+                                        epsilon=agent.epsilon, step=step)
+
+            # ── Apertura de posicion ──────────────────────────────────────
+            elif prev_position == 0 and live_position != 0:
+                entry_price   = price
+                virtual_capital = config.INITIAL_CAP + sum(pnl_usdt_hist)
+                try:
+                    entry_balance = virtual_capital
                 except Exception:
                     entry_balance = config.INITIAL_CAP
                 side_str = "LONG" if live_position == 1 else "SHORT"
@@ -309,7 +343,6 @@ def main():
                 pnl_usdt_hist.append(pnl_usdt)
 
                 # Guardar recompensa de cierre para el buffer del proximo tick
-                # (entry_price aun es valido aqui antes de resetearlo)
                 pending_reward = pnl_net * config.REWARD_SCALE
 
                 log.info(f"[CLOSE] Trade #{n_trades} | "
