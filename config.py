@@ -44,7 +44,7 @@ PRETRAIN_EPOCHS  = 100      # mas pasadas → politica mas refinada
 EPSILON_LIVE_START = 0.20
 
 # ── Live ──────────────────────────────────────────────────────────────────────
-LOOKBACK          = 200     # velas a descargar en cada tick
+LOOKBACK          = 360     # velas a descargar en cada tick (360/12 = 30 velas 1h, margen suficiente)
 CHECK_INTERVAL_S  = 60      # segundos entre ticks
 TRAIN_EVERY_STEPS = 50      # entrenar cada N pasos en live
 SAVE_EVERY_STEPS  = 500     # guardar checkpoint cada N pasos
