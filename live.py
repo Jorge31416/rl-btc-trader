@@ -90,7 +90,7 @@ def execute_action(client: BinanceDemoClient, action: int,
             if current_position == -1:
                 _close_all(client)
             balance = client.fetch_balance()["USDT"]["free"]
-            qty = round(balance * 0.95 / price, 3)
+            qty = round(balance * 0.20 / price, 3)
             if qty > 0:
                 client.create_market_order(sym, "buy", qty)
                 log.info(f"[LIVE] LONG {qty} BTC @ {price:.2f}")
@@ -100,7 +100,7 @@ def execute_action(client: BinanceDemoClient, action: int,
             if current_position == 1:
                 _close_all(client)
             balance = client.fetch_balance()["USDT"]["free"]
-            qty = round(balance * 0.95 / price, 3)
+            qty = round(balance * 0.20 / price, 3)
             if qty > 0:
                 client.create_market_order(sym, "sell", qty)
                 log.info(f"[LIVE] SHORT {qty} BTC @ {price:.2f}")
