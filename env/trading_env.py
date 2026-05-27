@@ -63,7 +63,7 @@ class TradingEnv(gym.Env):
             # Pre-computar features 1h como array numpy (N_1h, 4) para acceso rapido
             c1h = self.df_1h["close"].values
             v1h = self.df_1h["volume"].values
-            v1h_mean = np.convolve(v1h, np.ones(20)/20, mode="same") + 1e-9
+            v1h_mean = (pd.Series(v1h).rolling(20, min_periods=1).mean().values + 1e-9)
             ret_1h = np.diff(c1h, prepend=c1h[0]) / (c1h + 1e-9)
             vr_1h  = v1h / v1h_mean
             self._feat_1h = np.column_stack([
@@ -170,7 +170,7 @@ class TradingEnv(gym.Env):
             )
             c1h            = self.df_1h["close"].values
             v1h            = self.df_1h["volume"].values
-            v1h_mean       = np.convolve(v1h, np.ones(20)/20, mode="same") + 1e-9
+            v1h_mean       = (pd.Series(v1h).rolling(20, min_periods=1).mean().values + 1e-9)
             ret_1h         = np.diff(c1h, prepend=c1h[0]) / (c1h + 1e-9)
             vr_1h          = v1h / v1h_mean
             self._feat_1h  = np.column_stack([
