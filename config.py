@@ -45,6 +45,6 @@ EPSILON_LIVE_START = 0.20
 
 # ── Live ──────────────────────────────────────────────────────────────────────
 LOOKBACK          = 360     # velas a descargar en cada tick (360/12 = 30 velas 1h, margen suficiente)
-CHECK_INTERVAL_S  = 60      # segundos entre ticks
+CHECK_INTERVAL_S  = 300     # segundos entre ticks (5min = 1 vela, igual que el entrenamiento)
 TRAIN_EVERY_STEPS = 50      # entrenar cada N pasos en live
 SAVE_EVERY_STEPS  = 500     # guardar checkpoint cada N pasos
