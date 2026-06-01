@@ -268,7 +268,16 @@ def main():
             )
 
             # Ejecutar accion
-            virtual_capital = config.INITIAL_CAP + sum(pnl_usdt_hist)
+            # En flip directo (ej. SHORT→LONG), pre-incluir el PnL del cierre
+            # para que el tamaño de la nueva posicion use el capital actualizado
+            extra_pnl = 0.0
+            is_flip = (live_position != 0 and entry_price > 0 and
+                       ((action == TradingEnv.LONG  and live_position == -1) or
+                        (action == TradingEnv.SHORT and live_position ==  1)))
+            if is_flip:
+                _pct = (price - entry_price) / entry_price * live_position
+                extra_pnl = (_pct - config.TRADE_FEE * 2) * entry_balance
+            virtual_capital = config.INITIAL_CAP + sum(pnl_usdt_hist) + extra_pnl
             prev_position = live_position
             live_position = execute_action(client, action, live_position, price,
                                            virtual_capital=virtual_capital)
