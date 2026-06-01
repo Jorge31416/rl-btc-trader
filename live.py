@@ -405,8 +405,8 @@ def main():
                 except Exception as e:
                     log.warning(f"No se pudo guardar estado del bot: {e}")
 
-            # ── Resumen cada 100 steps ───────────────────────────────────
-            if step % 100 == 0:
+            # ── Resumen cada 50 steps (~4h con ticks de 5m) ──────────────
+            if step % 50 == 0:
                 tg.notify_live_summary(pnl_usdt_hist, step, agent.epsilon)
 
             time.sleep(config.CHECK_INTERVAL_S)
