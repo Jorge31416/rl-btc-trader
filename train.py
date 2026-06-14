@@ -31,7 +31,6 @@ import pandas as pd
 import config
 from data.demo_client import BinanceDemoClient
 from env.trading_env import TradingEnv
-from env.indicators import resample_1h
 from agent.dqn import DQNAgent
 import notifications.telegram as tg
 
@@ -153,9 +152,7 @@ def main():
                 log.info(f"Checkpoint v1 eliminado: {ckpt}")
 
     df    = download_history(args.candles)
-    df_1h = resample_1h(df)
-    log.info(f"Datos 1h: {len(df_1h):,} velas")
-    env   = TradingEnv(df, df_1h=df_1h)
+    env   = TradingEnv(df)
     agent = DQNAgent(state_size=env.state_size)
 
     if args.resume:

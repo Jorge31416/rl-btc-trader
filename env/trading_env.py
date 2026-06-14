@@ -1,18 +1,19 @@
 """
-Entorno de trading compatible con Gymnasium — v3 con indicadores + multi-timeframe.
+Entorno de trading compatible con Gymnasium — v3 con indicadores tecnicos.
 
-Estado del agente (432 features):
-  - 50 velas de 5m × 7 features = 350
+Estado del agente (352 features con WINDOW=50 y config.TIMEFRAME="1h"):
+  - 50 velas × 7 features = 350
       ret, h_rel, l_rel, o_rel, v_rel   (precio bruto normalizado)
-      rsi_norm, bb_pct_norm             (indicadores tectnicos, nuevos)
-  - 20 velas de 1h × 4 features = 80
-      ret_1h, v_rel_1h, rsi_1h, bb_1h  (contexto de tendencia mayor)
+      rsi_norm, bb_pct_norm             (indicadores tecnicos)
   - 2 features de posicion
       pos_enc, pnl_latente
 
 El RSI y las Bandas de Bollinger dan al agente señales mas directas
 de sobrecompra/sobreventa sin eliminar el enfoque de RL puro —
 la red sigue aprendiendo CUANDO y COMO usar esas señales.
+
+Soporta opcionalmente un contexto de timeframe mayor via df_1h
+(desactivado en el experimento 1h actual, has_1h=False).
 """
 import numpy as np
 import pandas as pd

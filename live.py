@@ -31,7 +31,6 @@ import pandas as pd
 import config
 from data.demo_client import BinanceDemoClient
 from env.trading_env import TradingEnv
-from env.indicators import resample_1h
 from agent.dqn import DQNAgent
 import notifications.telegram as tg
 
@@ -63,9 +62,9 @@ def fetch_df(client: BinanceDemoClient) -> pd.DataFrame | None:
         return None
 
 
-def get_obs(df: pd.DataFrame, df_1h: pd.DataFrame, env: TradingEnv) -> np.ndarray:
+def get_obs(df: pd.DataFrame, env: TradingEnv) -> np.ndarray:
     """Extrae el estado de las ultimas WINDOW velas del df en vivo."""
-    env.refresh_live(df, df_1h)    # actualiza datos e indicadores
+    env.refresh_live(df)    # actualiza datos e indicadores
     return env._get_obs()
 
 
@@ -134,8 +133,7 @@ def main():
         log.error("No se pudo conectar a Binance. Verifica las API keys.")
         sys.exit(1)
 
-    df0_1h = resample_1h(df0)
-    env    = TradingEnv(df0, df_1h=df0_1h)
+    env    = TradingEnv(df0)
     agent  = DQNAgent(state_size=env.state_size)
 
     BUFFER_PATH = Path("checkpoints/replay_buffer.pkl")
@@ -214,9 +212,8 @@ def main():
                 time.sleep(30)
                 continue
 
-            df_1h = resample_1h(df)
             price = float(df["close"].iloc[-1])
-            obs   = get_obs(df, df_1h, env)
+            obs   = get_obs(df, env)
 
             # Actualizar estado del entorno con posicion real
             env.position    = live_position
@@ -405,8 +402,8 @@ def main():
                 except Exception as e:
                     log.warning(f"No se pudo guardar estado del bot: {e}")
 
-            # ── Resumen cada 50 steps (~4h con ticks de 5m) ──────────────
-            if step % 50 == 0:
+            # ── Resumen cada 24 steps (~1 dia con ticks de 1h) ───────────
+            if step % 24 == 0:
                 tg.notify_live_summary(pnl_usdt_hist, step, agent.epsilon)
 
             time.sleep(config.CHECK_INTERVAL_S)

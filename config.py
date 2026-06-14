@@ -13,7 +13,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # ── Market ────────────────────────────────────────────────────────────────────
 SYMBOL    = "BTC/USDT:USDT"
-TIMEFRAME = "5m"
+TIMEFRAME = "1h"
 
 # ── Entorno de trading ────────────────────────────────────────────────────────
 WINDOW        = 50          # velas que ve el agente como estado
@@ -36,7 +36,7 @@ TARGET_UPDATE    = 1000     # actualizar red objetivo con menos frecuencia
 REWARD_SCALE     = 100.0
 
 # ── Entrenamiento offline ─────────────────────────────────────────────────────
-PRETRAIN_CANDLES = 200_000  # ~2 años de velas 5m — cubre bull 2021, bear 2022, recovery 2023-2024
+PRETRAIN_CANDLES = 40_000   # ~4.5 años de velas 1h — Binance futures BTC arranco en 2019
 PRETRAIN_EPOCHS  = 100      # mas pasadas → politica mas refinada
 
 # Epsilon con el que el bot arranca en vivo tras un entrenamiento fresco.
@@ -44,7 +44,7 @@ PRETRAIN_EPOCHS  = 100      # mas pasadas → politica mas refinada
 EPSILON_LIVE_START = 0.20
 
 # ── Live ──────────────────────────────────────────────────────────────────────
-LOOKBACK          = 360     # velas a descargar en cada tick (360/12 = 30 velas 1h, margen suficiente)
-CHECK_INTERVAL_S  = 300     # segundos entre ticks (5min = 1 vela, igual que el entrenamiento)
-TRAIN_EVERY_STEPS = 50      # entrenar cada N pasos en live
-SAVE_EVERY_STEPS  = 50      # guardar checkpoint cada N pasos (~4h con ticks de 5m)
+LOOKBACK          = 100     # velas a descargar en cada tick (>= WINDOW + margen)
+CHECK_INTERVAL_S  = 3600    # segundos entre ticks (1h = 1 vela, igual que el entrenamiento)
+TRAIN_EVERY_STEPS = 24      # entrenar cada N pasos en live (~1 dia)
+SAVE_EVERY_STEPS  = 24      # guardar checkpoint cada N pasos (~1 dia con ticks de 1h)
